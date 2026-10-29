@@ -1,0 +1,16 @@
+{
+	"mcpServers": {
+		"Payments": {
+			"url": "http://127.0.0.1:8001/mcp",
+			"type": "http"
+		},
+		"Amex-Gateway": {
+			"url": "http://127.0.0.1:8000/mcp",
+			"type": "http"
+		},
+		"Holidays": {
+			"url": "http://127.0.0.1:8003/mcp",
+			"type": "http"
+		}
+	}
+}
