@@ -11,7 +11,8 @@ function harness({ geoError, result, geolocation = true, toolName = "holidays_ge
     append(child) { this.children.push(child); }
     click() { return this.events.click(); }
   }
-  for (const id of ["radius", "locate", "decline", "status", "results"]) nodes.set(id, new Element());
+  for (const id of ["radius", "locate", "decline", "status", "results", "place", "search-place"]) nodes.set(id, new Element());
+  nodes.get("place").value = "";
   const calls = [];
   const document = { getElementById: (id) => nodes.get(id), createElement: () => new Element() };
   let geoCalls = 0;
@@ -118,4 +119,90 @@ test("connection failure or absent host tool context keeps location disabled", a
 test("parses JSON fallback and FastMCP wrapped results", () => {
   assert.deepEqual(parseToolResult({ content: [{ type: "text", text: '{"status":"ok"}' }] }), { status: "ok" });
   assert.deepEqual(parseToolResult({ structuredContent: { result: { status: "ok" } } }), { status: "ok" });
+});
+
+test("repeated clicks do not start concurrent location lookups", async () => {
+  const h = harness({ geoError: "pending" });
+  await h.controller.initialize();
+  const lookup = h.nodes.get("locate").click();
+  await h.nodes.get("locate").click();
+  assert.equal(h.geoCalls(), 1);
+  h.resolveLocation();
+  await lookup;
+  assert.equal(h.calls.length, 1);
+});
+
+test("declining while a tool request is pending ignores its late result", async () => {
+  const h = harness();
+  let resolveTool;
+  h.app.callServerTool = () => new Promise((resolve) => { resolveTool = resolve; });
+  await h.controller.initialize();
+  const lookup = h.nodes.get("locate").click();
+  await Promise.resolve();
+  assert.equal(typeof resolveTool, "function");
+  h.nodes.get("decline").click();
+  resolveTool({ structuredContent: { status: "ok", radius_km: 500, holidays: [
+    { destination: "Paris", country: "France", distance_km: 0, duration_days: 5, price_usd: 1200 },
+  ] } });
+  await lookup;
+  assert.equal(h.nodes.get("results").children.length, 0);
+  assert.match(h.nodes.get("status").textContent, /declined/);
+  assert.equal(h.nodes.get("locate").disabled, false);
+});
+
+test("destination markup is rendered as literal text", async () => {
+  const markup = '<img src=x onerror="alert(1)">';
+  const h = harness({ result: { structuredContent: { status: "ok", radius_km: 500, holidays: [
+    { destination: markup, country: "France", distance_km: 0, duration_days: 5, price_usd: 1200 },
+  ] } } });
+  await h.controller.initialize();
+  await h.nodes.get("locate").click();
+  const rendered = h.nodes.get("results").children[0];
+  assert.ok(rendered.textContent.startsWith(markup));
+  assert.equal(rendered.children.length, 0);
+  assert.equal(rendered.innerHTML, undefined);
+});
+
+test("initial named-place results render without geolocation and survive initialization", async () => {
+  const h = harness();
+  h.app.ontoolresult({ structuredContent: { status: "ok", radius_km: 500,
+    origin: "Mumbai, India", location_source: "named_place", holidays: [
+      { destination: "Goa", country: "India", distance_km: 435, duration_days: 5, price_usd: 450 },
+    ] } });
+  await h.controller.initialize();
+  assert.equal(h.geoCalls(), 0);
+  assert.equal(h.calls.length, 0);
+  assert.match(h.nodes.get("results").children[0].textContent, /Goa/);
+  assert.match(h.nodes.get("status").textContent, /Mumbai, India/);
+  h.app.ontoolresult({ structuredContent: { status: "consent_required", radius_km: 500 } });
+  assert.match(h.nodes.get("status").textContent, /Mumbai, India/);
+});
+
+test("unknown named place is explained without requesting device location", async () => {
+  const h = harness();
+  await h.controller.initialize();
+  h.app.ontoolresult({ structuredContent: { status: "location_not_found" } });
+  assert.match(h.nodes.get("status").textContent, /place.*not found/i);
+  assert.equal(h.geoCalls(), 0);
+});
+
+test("named-place retry sends location and radius without device coordinates", async () => {
+  const h = harness();
+  await h.controller.initialize();
+  h.nodes.get("place").value = "mubai";
+  h.nodes.get("radius").value = "750";
+  await h.nodes.get("search-place").click();
+  assert.equal(h.geoCalls(), 0);
+  assert.deepEqual(h.calls[0].arguments, { location: "mubai", radius_km: 750 });
+});
+
+test("late host notifications do not undo an explicit decline", async () => {
+  const h = harness();
+  await h.controller.initialize();
+  h.nodes.get("decline").click();
+  h.app.ontoolresult({ structuredContent: { status: "ok", radius_km: 500, origin: "Mumbai, India", holidays: [
+    { destination: "Goa", country: "India", distance_km: 435, duration_days: 5, price_usd: 450 },
+  ] } });
+  assert.equal(h.nodes.get("results").children.length, 0);
+  assert.match(h.nodes.get("status").textContent, /declined/);
 });

@@ -73,8 +73,15 @@ Do not book travel or initiate payments without user authorization.
 
 ## Nearby Holidays MCP App
 
-- When asked for holidays near the user's current location, call `get_nearby_holidays`
-  without coordinates (the gateway exposes it as `holidays_get_nearby_holidays`).
+- For nearby holiday requests, prefer any place explicitly named in the chat.
+  Call `get_nearby_holidays` with `location` containing just that place, e.g.
+  "holidays near mubai" becomes `location: "mubai"` (Mumbai is also accepted).
+  The gateway exposes the tool as `holidays_get_nearby_holidays`.
+- A named place takes priority over device location and requires no device consent.
+  Never substitute device location if the named place is unknown or ambiguous;
+  ask for corrected spelling or a country/region instead.
+- If no place is named, call without location or coordinates to open the device
+  location app. Do not guess coordinates from the user's chat or request history.
 - The app asks for explicit consent, then the browser asks for location permission.
   Never infer the user's current coordinates or set `location_consent` for them.
 - The radius is in kilometers, defaults to 500, and must be greater than zero and
