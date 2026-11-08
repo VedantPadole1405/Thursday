@@ -49,6 +49,18 @@ class NearbyDistanceTests(unittest.TestCase):
 
 
 class NearbyMCPTests(unittest.IsolatedAsyncioTestCase):
+    async def test_existing_holiday_tools_remain_available_and_unchanged(self):
+        async with Client(mcp) as client:
+            catalog = await client.call_tool("list_holidays", {})
+            self.assertEqual(len(catalog.data), len(HOLIDAY_CATALOG))
+            self.assertTrue(all("distance_km" not in item for item in catalog.data))
+            search = await client.call_tool("search_holidays", {"destination": "Paris"})
+            self.assertEqual([item["holiday_id"] for item in search.data], ["HOL001"])
+            details = await client.call_tool("get_holiday_details", {"holiday_id": "HOL001"})
+            self.assertEqual(details.data["destination"], "Paris")
+            recommended = await client.call_tool("recommend_holiday", {"budget": 1000})
+            self.assertEqual([item["price_usd"] for item in recommended.data], [450, 800, 950])
+
     async def test_malformed_arguments_are_not_logged_or_echoed(self):
         # SDK validation errors can log submitted input; reject those before it.
         with patch.object(logging.Logger, "warning") as warning:

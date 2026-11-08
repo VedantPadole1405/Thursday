@@ -119,3 +119,45 @@ test("parses JSON fallback and FastMCP wrapped results", () => {
   assert.deepEqual(parseToolResult({ content: [{ type: "text", text: '{"status":"ok"}' }] }), { status: "ok" });
   assert.deepEqual(parseToolResult({ structuredContent: { result: { status: "ok" } } }), { status: "ok" });
 });
+
+test("repeated clicks do not start concurrent location lookups", async () => {
+  const h = harness({ geoError: "pending" });
+  await h.controller.initialize();
+  const lookup = h.nodes.get("locate").click();
+  await h.nodes.get("locate").click();
+  assert.equal(h.geoCalls(), 1);
+  h.resolveLocation();
+  await lookup;
+  assert.equal(h.calls.length, 1);
+});
+
+test("declining while a tool request is pending ignores its late result", async () => {
+  const h = harness();
+  let resolveTool;
+  h.app.callServerTool = () => new Promise((resolve) => { resolveTool = resolve; });
+  await h.controller.initialize();
+  const lookup = h.nodes.get("locate").click();
+  await Promise.resolve();
+  assert.equal(typeof resolveTool, "function");
+  h.nodes.get("decline").click();
+  resolveTool({ structuredContent: { status: "ok", radius_km: 500, holidays: [
+    { destination: "Paris", country: "France", distance_km: 0, duration_days: 5, price_usd: 1200 },
+  ] } });
+  await lookup;
+  assert.equal(h.nodes.get("results").children.length, 0);
+  assert.match(h.nodes.get("status").textContent, /declined/);
+  assert.equal(h.nodes.get("locate").disabled, false);
+});
+
+test("destination markup is rendered as literal text", async () => {
+  const markup = '<img src=x onerror="alert(1)">';
+  const h = harness({ result: { structuredContent: { status: "ok", radius_km: 500, holidays: [
+    { destination: markup, country: "France", distance_km: 0, duration_days: 5, price_usd: 1200 },
+  ] } } });
+  await h.controller.initialize();
+  await h.nodes.get("locate").click();
+  const rendered = h.nodes.get("results").children[0];
+  assert.ok(rendered.textContent.startsWith(markup));
+  assert.equal(rendered.children.length, 0);
+  assert.equal(rendered.innerHTML, undefined);
+});
