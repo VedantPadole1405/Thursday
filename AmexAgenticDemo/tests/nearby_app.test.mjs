@@ -195,3 +195,14 @@ test("named-place retry sends location and radius without device coordinates", a
   assert.equal(h.geoCalls(), 0);
   assert.deepEqual(h.calls[0].arguments, { location: "mubai", radius_km: 750 });
 });
+
+test("late host notifications do not undo an explicit decline", async () => {
+  const h = harness();
+  await h.controller.initialize();
+  h.nodes.get("decline").click();
+  h.app.ontoolresult({ structuredContent: { status: "ok", radius_km: 500, origin: "Mumbai, India", holidays: [
+    { destination: "Goa", country: "India", distance_km: 435, duration_days: 5, price_usd: 450 },
+  ] } });
+  assert.equal(h.nodes.get("results").children.length, 0);
+  assert.match(h.nodes.get("status").textContent, /declined/);
+});

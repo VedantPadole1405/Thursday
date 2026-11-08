@@ -16,6 +16,7 @@ export function createNearbyController({ app, document, geolocation }) {
   let generation = 0;
   let toolName;
   let hasDisplay = false;
+  let userInteracted = false;
   const status = (text) => { $("status").textContent = text; };
   const clear = () => $("results").replaceChildren();
   const setBusy = (value) => {
@@ -57,6 +58,7 @@ export function createNearbyController({ app, document, geolocation }) {
 
   async function searchPlace() {
     if (!connected || busy) return;
+    userInteracted = true;
     const location = $("place").value.trim();
     const radius = Number($("radius").value);
     if (!location) {
@@ -83,6 +85,7 @@ export function createNearbyController({ app, document, geolocation }) {
 
   async function locate() {
     if (!connected || busy) return;
+    userInteracted = true;
     clear();
     const radius = Number($("radius").value);
     if (!Number.isFinite(radius) || radius <= 0 || radius > 20050) {
@@ -129,6 +132,7 @@ export function createNearbyController({ app, document, geolocation }) {
   $("locate").addEventListener("click", locate);
   $("search-place").addEventListener("click", searchPlace);
   $("decline").addEventListener("click", () => {
+    userInteracted = true;
     // Invalidate pending browser callbacks/tool responses after declining.
     generation += 1;
     hasDisplay = true;
@@ -138,6 +142,9 @@ export function createNearbyController({ app, document, geolocation }) {
   });
   app.ontoolresult = (result) => {
     // Host results can display named-place recommendations without geolocation.
+    // Once the user acts, direct call responses own the UI. Late/duplicate host
+    // notifications must not replace a newer search or undo an explicit decline.
+    if (userInteracted) return;
     try {
       const data = parseToolResult(result);
       if (busy) return;
