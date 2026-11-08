@@ -1,7 +1,8 @@
 
 import uvicorn
 
-from fastmcp import FastMCP
+from fastmcp import Client, FastMCP
+from fastmcp.apps import AppConfig, ResourcePermissions
 from fastmcp.server import create_proxy
 
 
@@ -45,6 +46,26 @@ gateway.mount(
     holidays_proxy,
     namespace="holidays"
 )
+
+
+def register_nearby_ui_alias(server, holidays_backend):
+    """Keep the backend's UI URI readable after namespaced mounting.
+
+    FastMCP namespaces resource URIs but preserves the tool's ui.resourceUri.
+    The alias also carries permissions on resources/read, where hosts need them.
+    """
+    @server.resource(
+        "ui://holidays/nearby",
+        mime_type="text/html;profile=mcp-app",
+        app=AppConfig(permissions=ResourcePermissions(geolocation={})),
+    )
+    async def nearby_holidays_ui() -> str:
+        async with Client(holidays_backend) as client:
+            contents = await client.read_resource("ui://holidays/nearby")
+        return contents[0].text
+
+
+register_nearby_ui_alias(gateway, HOLIDAYS_URL)
 
 
 # ==========================================

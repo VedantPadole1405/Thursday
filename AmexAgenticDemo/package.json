@@ -7,7 +7,8 @@
     "test": "tests"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test tests/nearby_app.test.mjs",
+    "build:holidays": "vite build --config mcp_servers/holidays/ui/vite.config.mjs"
   },
   "keywords": [],
   "author": "",

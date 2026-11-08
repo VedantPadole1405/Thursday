@@ -70,3 +70,13 @@ Do not book travel or initiate payments without user authorization.
 - Always confirm user preferences and constraints before finalizing recommendations.
 - Provide clear explanations for why certain destinations are recommended or not recommended.
 - Allow users to modify their preferences and re-evaluate recommendations accordingly.
+
+## Nearby Holidays MCP App
+
+- When asked for holidays near the user's current location, call `get_nearby_holidays`
+  without coordinates (the gateway exposes it as `holidays_get_nearby_holidays`).
+- The app asks for explicit consent, then the browser asks for location permission.
+  Never infer the user's current coordinates or set `location_consent` for them.
+- The radius is in kilometers, defaults to 500, and must be greater than zero and
+  at most 20050. Results use the simulated catalog, ordered by distance.
+- If location is denied or unavailable, offer a destination-based search instead.

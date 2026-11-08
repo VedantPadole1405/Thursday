@@ -1,0 +1,6 @@
+# Dependencies for the holiday MCP server and its offline integration tests.
+# FastMCP 3 provides MCP Apps resource permissions and namespace-aware app metadata.
+fastmcp==3.4.11
+fastapi>=0.115,<1
+httpx>=0.28,<1
+uvicorn>=0.34,<1
