@@ -21,6 +21,10 @@
 <body>
   <main>
     <h1>Explore holidays near you</h1>
+    <p>A place mentioned in chat is searched first, without accessing your device location. You can also enter a place below.</p>
+    <label for="place">Place name</label>
+    <input id="place" type="text" maxlength="200" placeholder="Mumbai, India">
+    <button id="search-place" type="button" disabled>Search place</button>
     <p>Search our simulated holiday catalog. Choose “Use my location” to allow a one-time location lookup and send your coordinates through the MCP host to the holidays service. The app and service do not save or log your location.</p>
     <p>Your chat host and browser control permission and may process tool requests under their own policies. No location is accessed until you choose to continue.</p>
     <label for="radius">Search radius (km)</label>

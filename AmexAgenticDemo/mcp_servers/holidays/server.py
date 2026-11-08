@@ -31,8 +31,10 @@ class NearbyPrivacyMiddleware(Middleware):
     async def on_call_tool(self, context, call_next):
         if context.message.name == "get_nearby_holidays":
             arguments = context.message.arguments or {}
-            allowed = {"latitude", "longitude", "radius_km", "location_consent"}
+            allowed = {"latitude", "longitude", "radius_km", "location_consent", "location"}
             invalid = bool(set(arguments) - allowed)
+            if arguments.get("location") is not None and not isinstance(arguments["location"], str):
+                invalid = True
             for name in ("latitude", "longitude", "radius_km"):
                 value = arguments.get(name)
                 if value is None and name != "radius_km":
@@ -303,24 +305,77 @@ def nearby_holidays(latitude: float, longitude: float, radius_km: float) -> list
     ]
 
 
+class AmbiguousLocationError(ValueError):
+    """A place name needs a country or region to select an origin."""
+
+
+async def resolve_named_location(location: str) -> tuple[str, float, float] | None:
+    """Resolve demo origins locally, then use Open-Meteo/GeoNames for other places."""
+    normalized = " ".join(location.casefold().split())
+    if normalized in {"mumbai", "mubai", "bombay", "mumbai, india"}:
+        return "Mumbai, India", 19.0760, 72.8777
+    for package in HOLIDAY_CATALOG:
+        if normalized in {package.destination.casefold(),
+                          f"{package.destination}, {package.country}".casefold()}:
+            return f"{package.destination}, {package.country}", package.latitude, package.longitude
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.get("https://geocoding-api.open-meteo.com/v1/search", params={
+            "name": location, "count": 2, "language": "en", "format": "json",
+        })
+        response.raise_for_status()
+        matches = response.json().get("results", [])
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise AmbiguousLocationError()
+    place = matches[0]
+    latitude, longitude = float(place["latitude"]), float(place["longitude"])
+    if not math.isfinite(latitude) or not -90 <= latitude <= 90 or not math.isfinite(longitude) or not -180 <= longitude <= 180:
+        raise ValueError("Invalid geocoding response")
+    label = ", ".join(str(place[key]) for key in ("name", "admin1", "country") if place.get(key))
+    return label, latitude, longitude
+
+
 @mcp.tool(
     app=AppConfig(resource_uri=NEARBY_UI_URI),
-    annotations={"readOnlyHint": True, "openWorldHint": False},
+    annotations={"readOnlyHint": True, "openWorldHint": True},
 )
-def get_nearby_holidays(
+async def get_nearby_holidays(
     latitude: float | None = None,
     longitude: float | None = None,
     radius_km: float = DEFAULT_RADIUS_KM,
     location_consent: bool = False,
+    location: str | None = None,
 ) -> dict:
-    """Open the Nearby Holidays consent app by calling without coordinates.
+    """Find nearby holidays using a named place from the user's chat first.
 
-    Only the app should submit coordinates, after the user's explicit consent.
+    For 'holidays near Mumbai' or 'near mubai', pass location='Mumbai' or 'mubai'.
+    Extract only the place name, not the whole chat. A named location takes
+    priority over device coordinates and needs no device-location permission.
+    If the chat has no named place, call without location or coordinates to open
+    the device-location app. Only the app submits device coordinates after consent.
+    Unknown or ambiguous named places require clarification, never device fallback.
     Search the simulated catalog within radius_km (0 < radius <= 20050 km).
     User coordinates are used transiently and are never returned or persisted.
     """
     if not math.isfinite(radius_km) or not 0 < radius_km <= MAX_RADIUS_KM:
         return {"status": "invalid_request", "message": "Choose a radius greater than 0 and at most 20050 km."}
+    location = location.strip() if location else ""
+    if location:
+        if not 2 <= len(location) <= 200:
+            return {"status": "invalid_request", "message": "Provide a place name between 2 and 200 characters."}
+        try:
+            resolved = await resolve_named_location(location)
+        except AmbiguousLocationError:
+            return {"status": "location_ambiguous", "message": "Several places match. Add a country or region to the place name."}
+        except Exception:
+            return {"status": "location_unavailable", "message": "Place lookup is unavailable. Retry or specify a supported destination."}
+        if resolved is None:
+            return {"status": "location_not_found", "message": "Place was not found. Check the spelling or add a country."}
+        origin, place_latitude, place_longitude = resolved
+        return {"status": "ok", "radius_km": radius_km, "origin": origin,
+                "location_source": "named_place",
+                "holidays": nearby_holidays(place_latitude, place_longitude, radius_km)}
     if latitude is None and longitude is None:
         return {"status": "consent_required", "radius_km": radius_km}
     if not location_consent:
@@ -332,7 +387,8 @@ def get_nearby_holidays(
     except ValueError:
         # Do not echo submitted coordinates in results or error messages.
         return {"status": "invalid_request", "message": "Location or radius is outside the supported range."}
-    return {"status": "ok", "radius_km": radius_km, "holidays": results}
+    return {"status": "ok", "radius_km": radius_km, "origin": "your device location",
+            "location_source": "device", "holidays": results}
 
 
 @mcp.resource(

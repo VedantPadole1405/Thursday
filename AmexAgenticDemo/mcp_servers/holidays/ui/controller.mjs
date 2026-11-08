@@ -15,22 +15,35 @@ export function createNearbyController({ app, document, geolocation }) {
   let busy = false;
   let generation = 0;
   let toolName;
+  let hasDisplay = false;
   const status = (text) => { $("status").textContent = text; };
   const clear = () => $("results").replaceChildren();
   const setBusy = (value) => {
     busy = value;
     $("locate").disabled = value || !connected;
     $("radius").disabled = value;
+    $("place").disabled = value;
+    $("search-place").disabled = value || !connected;
   };
 
   function showResult(data) {
     clear();
+    hasDisplay = true;
+    const placeErrors = {
+      location_not_found: "Place was not found. Check the spelling or add a country. Device location was not used.",
+      location_ambiguous: "Several places match. Add a country or region. Device location was not used.",
+      location_unavailable: "Place lookup is unavailable. Please retry. Device location was not used.",
+    };
+    if (placeErrors[data?.status]) {
+      status(placeErrors[data.status]);
+      return;
+    }
     if (data?.status !== "ok" || !Array.isArray(data.holidays)) {
       status("Unable to search. Check your radius and try again.");
       return;
     }
     if (!data.holidays.length) {
-      status("No destinations in this radius. Try a larger radius and choose Use my location again.");
+      status(`No destinations within ${data.radius_km} km of ${data.origin ?? "your device location"}. Try a larger radius and search again.`);
       return;
     }
     for (const holiday of data.holidays) {
@@ -39,7 +52,33 @@ export function createNearbyController({ app, document, geolocation }) {
       item.textContent = `${holiday.destination}, ${holiday.country} — ${holiday.distance_km} km · ${holiday.duration_days} days · USD ${holiday.price_usd}`;
       $("results").append(item);
     }
-    status(`${data.holidays.length} destination(s) within ${data.radius_km} km. Nearest first.`);
+    status(`${data.holidays.length} destination(s) within ${data.radius_km} km of ${data.origin ?? "your device location"}. Nearest first.`);
+  }
+
+  async function searchPlace() {
+    if (!connected || busy) return;
+    const location = $("place").value.trim();
+    const radius = Number($("radius").value);
+    if (!location) {
+      status("Enter a place name, or choose Use my location for a device search.");
+      return;
+    }
+    if (!Number.isFinite(radius) || radius <= 0 || radius > 20050) {
+      status("Choose a radius greater than 0 and at most 20050 km.");
+      return;
+    }
+    const request = ++generation;
+    clear();
+    setBusy(true);
+    status("Finding holidays near the named place...");
+    try {
+      const result = await app.callServerTool({ name: toolName, arguments: { location, radius_km: radius } });
+      if (request === generation) showResult(parseToolResult(result));
+    } catch {
+      if (request === generation) status("Place lookup is unavailable. Please retry. Device location was not used.");
+    } finally {
+      if (request === generation) setBusy(false);
+    }
   }
 
   async function locate() {
@@ -88,18 +127,25 @@ export function createNearbyController({ app, document, geolocation }) {
   }
 
   $("locate").addEventListener("click", locate);
+  $("search-place").addEventListener("click", searchPlace);
   $("decline").addEventListener("click", () => {
     // Invalidate pending browser callbacks/tool responses after declining.
     generation += 1;
+    hasDisplay = true;
     clear();
     setBusy(false);
     status("Location declined. Ask for holidays by destination, or choose Use my location if you change your mind.");
   });
   app.ontoolresult = (result) => {
-    // Initial tool data may set a radius, but cannot cause geolocation access.
+    // Host results can display named-place recommendations without geolocation.
     try {
       const data = parseToolResult(result);
-      if (!busy && data?.status === "consent_required" && Number.isFinite(data.radius_km)) {
+      if (busy) return;
+      if (data?.status === "ok" || data?.status?.startsWith("location_") || data?.status === "invalid_request") {
+        if (Number.isFinite(data.radius_km)) $("radius").value = String(data.radius_km);
+        if (data.location_source === "named_place") $("place").value = data.origin;
+        showResult(data);
+      } else if (!hasDisplay && data?.status === "consent_required" && Number.isFinite(data.radius_km)) {
         $("radius").value = String(data.radius_km);
       }
     } catch { /* Keep consent controls available if the initial result is invalid. */ }
@@ -116,7 +162,7 @@ export function createNearbyController({ app, document, geolocation }) {
       }
       connected = true;
       setBusy(false);
-      status("Choose Use my location to allow a one-time nearby search, or No thanks.");
+      if (!hasDisplay) status("Enter a place to search, or choose Use my location to allow a one-time device search.");
     } catch {
       status("Unable to connect to the chat host. Reopen the app in an MCP Apps compatible host.");
     }

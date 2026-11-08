@@ -3,14 +3,14 @@ import copy
 import json
 import logging
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastmcp import Client, FastMCP
 from fastmcp.server import create_proxy
 from gateway.gateway import register_nearby_ui_alias
 
 from mcp_servers.holidays.server import (
-    HOLIDAY_CATALOG, mcp, nearby_holidays,
+    HOLIDAY_CATALOG, mcp, nearby_holidays, resolve_named_location, AmbiguousLocationError,
 )
 
 
@@ -49,6 +49,55 @@ class NearbyDistanceTests(unittest.TestCase):
 
 
 class NearbyMCPTests(unittest.IsolatedAsyncioTestCase):
+    async def test_general_geocoding_success_unknown_and_ambiguous(self):
+        response = Mock()
+        client = AsyncMock()
+        client.get.return_value = response
+        with patch("mcp_servers.holidays.server.httpx.AsyncClient") as factory:
+            factory.return_value.__aenter__.return_value = client
+            response.json.return_value = {"results": [{
+                "name": "London", "country": "United Kingdom", "latitude": 51.5074, "longitude": -0.1278,
+            }]}
+            result = await resolve_named_location("London, UK")
+            self.assertEqual(result, ("London, United Kingdom", 51.5074, -0.1278))
+            self.assertEqual(client.get.call_args.kwargs["params"]["name"], "London, UK")
+            response.json.return_value = {}
+            self.assertIsNone(await resolve_named_location("unknown city"))
+            response.json.return_value = {"results": [{"name": "Springfield"}, {"name": "Springfield"}]}
+            with self.assertRaises(AmbiguousLocationError):
+                await resolve_named_location("Springfield")
+
+    async def test_named_mumbai_and_typo_take_priority_without_device_consent(self):
+        async with Client(mcp) as client:
+            for location in ("Mumbai", " mubai ", "Bombay"):
+                result = await client.call_tool("get_nearby_holidays", {
+                    "location": location, "latitude": 48.8566, "longitude": 2.3522,
+                })
+                self.assertEqual(result.data["status"], "ok")
+                self.assertEqual(result.data["origin"], "Mumbai, India")
+                self.assertEqual(result.data["location_source"], "named_place")
+                self.assertEqual([h["destination"] for h in result.data["holidays"]], ["Goa"])
+
+    async def test_named_place_resolution_and_failures_do_not_fallback_to_device(self):
+        async with Client(mcp) as client:
+            with patch("mcp_servers.holidays.server.resolve_named_location", new_callable=AsyncMock) as resolver:
+                resolver.return_value = ("London, United Kingdom", 51.5074, -0.1278)
+                found = await client.call_tool("get_nearby_holidays", {"location": "London"})
+                self.assertEqual(found.data["holidays"][0]["destination"], "Paris")
+                self.assertEqual(found.data["origin"], "London, United Kingdom")
+                resolver.return_value = None
+                unknown = await client.call_tool("get_nearby_holidays", {
+                    "location": "unknown city", "latitude": 48.85, "longitude": 2.35,
+                    "location_consent": True,
+                })
+                self.assertEqual(unknown.data["status"], "location_not_found")
+                resolver.side_effect = RuntimeError("private-provider-error")
+                unavailable = await client.call_tool("get_nearby_holidays", {"location": "London"})
+                self.assertEqual(unavailable.data["status"], "location_unavailable")
+                self.assertNotIn("private-provider-error", str(unavailable.content))
+            empty = await client.call_tool("get_nearby_holidays", {"location": "  "})
+            self.assertEqual(empty.data["status"], "consent_required")
+
     async def test_existing_holiday_tools_remain_available_and_unchanged(self):
         async with Client(mcp) as client:
             catalog = await client.call_tool("list_holidays", {})

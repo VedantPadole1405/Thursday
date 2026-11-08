@@ -6,6 +6,23 @@ Distances and radius are kilometers, the default radius is 500 km, and the valid
 range is greater than zero through 20050 km. Destinations are sorted nearest first.
 This is demonstration travel data, not a live booking service.
 
+## Named places from chat
+
+The chat host should extract a place from a request such as "holidays near mubai"
+and call `get_nearby_holidays` with `location: "mubai"`. Named places take priority
+over device coordinates and do not require device-location consent. Mumbai,
+Bombay, the typo mubai, and catalog destinations resolve locally. Other place
+names are sent to [Open-Meteo's geocoding API](https://open-meteo.com/en/docs/geocoding-api)
+(GeoNames data); this requires internet access. No device coordinates are sent
+to that provider. Unknown, ambiguous, or unavailable lookups show a correction
+or retry message and never silently switch to the user's device location.
+Specify a country or region to disambiguate common names.
+
+The app displays the resolved origin and recommendations immediately from the
+host's initial tool result. Its place field lets users retry with a different
+place or radius. Mumbai's default 500 km search includes Goa in this simulated
+catalog. When no place is named, the app offers the device-location flow below.
+
 ## Run locally
 
 From `AmexAgenticDemo`, with Python 3.11+ and Node.js 22.12+:
@@ -62,7 +79,7 @@ tool calls, and a namespaced proxy's tool/resource metadata and UI reads. They
 are offline and never acquire real location. Existing `test_holidays.py` and
 `test_gateway.py` are manual live-server smoke scripts.
 
-Before using a particular chat host, manually confirm that opening the app does
+An optional smoke check in a particular chat host can confirm that opening the app does
 not prompt for location, that **Use my location** triggers its permission flow,
 and that denied/allowed location is reflected in the app. Host sandbox permission
 delegation cannot be established by the offline test suite.

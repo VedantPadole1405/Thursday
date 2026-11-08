@@ -11,7 +11,8 @@ function harness({ geoError, result, geolocation = true, toolName = "holidays_ge
     append(child) { this.children.push(child); }
     click() { return this.events.click(); }
   }
-  for (const id of ["radius", "locate", "decline", "status", "results"]) nodes.set(id, new Element());
+  for (const id of ["radius", "locate", "decline", "status", "results", "place", "search-place"]) nodes.set(id, new Element());
+  nodes.get("place").value = "";
   const calls = [];
   const document = { getElementById: (id) => nodes.get(id), createElement: () => new Element() };
   let geoCalls = 0;
@@ -160,4 +161,37 @@ test("destination markup is rendered as literal text", async () => {
   assert.ok(rendered.textContent.startsWith(markup));
   assert.equal(rendered.children.length, 0);
   assert.equal(rendered.innerHTML, undefined);
+});
+
+test("initial named-place results render without geolocation and survive initialization", async () => {
+  const h = harness();
+  h.app.ontoolresult({ structuredContent: { status: "ok", radius_km: 500,
+    origin: "Mumbai, India", location_source: "named_place", holidays: [
+      { destination: "Goa", country: "India", distance_km: 435, duration_days: 5, price_usd: 450 },
+    ] } });
+  await h.controller.initialize();
+  assert.equal(h.geoCalls(), 0);
+  assert.equal(h.calls.length, 0);
+  assert.match(h.nodes.get("results").children[0].textContent, /Goa/);
+  assert.match(h.nodes.get("status").textContent, /Mumbai, India/);
+  h.app.ontoolresult({ structuredContent: { status: "consent_required", radius_km: 500 } });
+  assert.match(h.nodes.get("status").textContent, /Mumbai, India/);
+});
+
+test("unknown named place is explained without requesting device location", async () => {
+  const h = harness();
+  await h.controller.initialize();
+  h.app.ontoolresult({ structuredContent: { status: "location_not_found" } });
+  assert.match(h.nodes.get("status").textContent, /place.*not found/i);
+  assert.equal(h.geoCalls(), 0);
+});
+
+test("named-place retry sends location and radius without device coordinates", async () => {
+  const h = harness();
+  await h.controller.initialize();
+  h.nodes.get("place").value = "mubai";
+  h.nodes.get("radius").value = "750";
+  await h.nodes.get("search-place").click();
+  assert.equal(h.geoCalls(), 0);
+  assert.deepEqual(h.calls[0].arguments, { location: "mubai", radius_km: 750 });
 });
