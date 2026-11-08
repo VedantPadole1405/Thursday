@@ -14,3 +14,4 @@
 **/build/
 *.py[cod]
 *.log
+**/.test-deps/

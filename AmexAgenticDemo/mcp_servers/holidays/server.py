@@ -1,10 +1,15 @@
 
 import json
+import math
+from pathlib import Path
 from typing import Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastmcp import FastMCP
+from fastmcp.apps import AppConfig, ResourcePermissions
+from fastmcp.server.middleware import Middleware
+from fastmcp.tools import ToolResult
 from pydantic import BaseModel, Field
 
 
@@ -18,6 +23,45 @@ api = FastAPI(
 )
 
 mcp = FastMCP(name="Holidays MCP Server")
+
+
+class NearbyPrivacyMiddleware(Middleware):
+    """Reject malformed location arguments before SDK validation can log their values."""
+
+    async def on_call_tool(self, context, call_next):
+        if context.message.name == "get_nearby_holidays":
+            arguments = context.message.arguments or {}
+            allowed = {"latitude", "longitude", "radius_km", "location_consent"}
+            invalid = bool(set(arguments) - allowed)
+            for name in ("latitude", "longitude", "radius_km"):
+                value = arguments.get(name)
+                if value is None and name != "radius_km":
+                    continue
+                if name in arguments and (
+                    isinstance(value, bool) or not isinstance(value, (int, float))
+                ):
+                    invalid = True
+                elif name in arguments:
+                    try:
+                        invalid = invalid or not math.isfinite(value)
+                    except OverflowError:
+                        invalid = True
+            if "location_consent" in arguments and not isinstance(arguments["location_consent"], bool):
+                invalid = True
+            if invalid:
+                return ToolResult(structured_content={
+                    "status": "invalid_request",
+                    "message": "Location and radius must be numbers, with explicit boolean consent.",
+                })
+        return await call_next(context)
+
+
+mcp.add_middleware(NearbyPrivacyMiddleware())
+
+NEARBY_UI_URI = "ui://holidays/nearby"
+NEARBY_UI_FILE = Path(__file__).parent / "ui" / "dist" / "nearby.html"
+DEFAULT_RADIUS_KM = 500
+MAX_RADIUS_KM = 20050
 
 
 # ==========================================
@@ -230,6 +274,79 @@ def filter_holidays(
 # 5. MCP TOOLS
 # ==========================================
 
+def nearby_holidays(latitude: float, longitude: float, radius_km: float) -> list[dict]:
+    """Filter the simulation catalog using great-circle distance, without retaining location."""
+    if not math.isfinite(latitude) or not -90 <= latitude <= 90:
+        raise ValueError("Latitude must be between -90 and 90")
+    if not math.isfinite(longitude) or not -180 <= longitude <= 180:
+        raise ValueError("Longitude must be between -180 and 180")
+    if not math.isfinite(radius_km) or not 0 < radius_km <= MAX_RADIUS_KM:
+        raise ValueError(f"Radius must be greater than 0 and at most {MAX_RADIUS_KM} km")
+
+    matches = []
+    lat1 = math.radians(latitude)
+    for package in get_all_holidays():
+        lat2 = math.radians(package["latitude"])
+        delta_lat = lat2 - lat1
+        delta_lon = math.radians(package["longitude"] - longitude)
+        haversine = (
+            math.sin(delta_lat / 2) ** 2
+            + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lon / 2) ** 2
+        )
+        distance = 6371.0088 * 2 * math.asin(math.sqrt(min(1, max(0, haversine))))
+        # Filter before rounding so a destination outside the radius never slips in.
+        if distance <= radius_km:
+            matches.append((distance, package))
+    return [
+        {**package, "distance_km": round(distance, 2)}
+        for distance, package in sorted(matches, key=lambda item: (item[0], item[1]["holiday_id"]))
+    ]
+
+
+@mcp.tool(
+    app=AppConfig(resource_uri=NEARBY_UI_URI),
+    annotations={"readOnlyHint": True, "openWorldHint": False},
+)
+def get_nearby_holidays(
+    latitude: float | None = None,
+    longitude: float | None = None,
+    radius_km: float = DEFAULT_RADIUS_KM,
+    location_consent: bool = False,
+) -> dict:
+    """Open the Nearby Holidays consent app by calling without coordinates.
+
+    Only the app should submit coordinates, after the user's explicit consent.
+    Search the simulated catalog within radius_km (0 < radius <= 20050 km).
+    User coordinates are used transiently and are never returned or persisted.
+    """
+    if not math.isfinite(radius_km) or not 0 < radius_km <= MAX_RADIUS_KM:
+        return {"status": "invalid_request", "message": "Choose a radius greater than 0 and at most 20050 km."}
+    if latitude is None and longitude is None:
+        return {"status": "consent_required", "radius_km": radius_km}
+    if not location_consent:
+        return {"status": "consent_required", "radius_km": radius_km}
+    if latitude is None or longitude is None:
+        return {"status": "invalid_request", "message": "Both coordinates are required."}
+    try:
+        results = nearby_holidays(latitude, longitude, radius_km)
+    except ValueError:
+        # Do not echo submitted coordinates in results or error messages.
+        return {"status": "invalid_request", "message": "Location or radius is outside the supported range."}
+    return {"status": "ok", "radius_km": radius_km, "holidays": results}
+
+
+@mcp.resource(
+    NEARBY_UI_URI,
+    mime_type="text/html;profile=mcp-app",
+    app=AppConfig(permissions=ResourcePermissions(geolocation={})),
+)
+def nearby_holidays_ui() -> str:
+    """Serve the self-contained MCP App and request host geolocation delegation."""
+    if not NEARBY_UI_FILE.is_file():
+        raise FileNotFoundError("Build the Nearby Holidays UI with npm run build:holidays")
+    return NEARBY_UI_FILE.read_text(encoding="utf-8")
+
+
 @mcp.tool()
 def list_holidays() -> list[dict]:
     """List all available simulated holiday packages."""
@@ -330,7 +447,8 @@ def holiday_service_info() -> str:
             "list_holidays",
             "search_holidays",
             "get_holiday_details",
-            "recommend_holiday"
+            "recommend_holiday",
+            "get_nearby_holidays"
         ]
     }, indent=2)
 
